@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Sea‑Level Small‑Multiples</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body{margin:0;font-family:system-ui,sans-serif;background:#f8f8f8;color:#222;display:flex;flex-direction:column;min-height:100vh;}
+    header{background:#1c3d5a;color:#fff;padding:1rem;text-align:center;}
+    #grid{display:flex;flex-wrap:wrap;gap:1rem;justify-content:center;padding:1rem;flex:1 1 auto;} /* take remaining height */
+    .cell{background:#fff;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.1);padding:1rem;flex:1 1 260px;max-width:300px;position:relative;transition:transform .4s;}
+    .cell.active{transform:scale(1.08);box-shadow:0 4px 12px rgba(0,0,0,.2);}    
+    .title{position:absolute;top:6px;left:12px;font-weight:600;font-size:.9rem;pointer-events:none;}
+    svg{width:100%;height:180px;overflow:visible;}
+    .axis line,.axis path{stroke:#aaa;stroke-width:.5px;}
+    /* -------- Toolbar -------- */
+    #toolbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:1rem;padding:0.8rem 1rem;background:#ffffff;box-shadow:0 -2px 6px rgba(0,0,0,.1);}    
+    #playBtn{padding:.55rem 1.2rem;font-size:1rem;border:none;border-radius:6px;background:#1c3d5a;color:#fff;cursor:pointer;}
+    .legend-item{display:flex;align-items:center;font-size:.9rem;margin:0 .4rem;white-space:nowrap;}
+    .legend-swatch{width:14px;height:14px;border-radius:2px;margin-right:4px;flex:none;}
+  </style>
+</head>
+<body>
+  <header><h1>Animated Small‑Multiples: Regional Sea‑Level Change</h1></header>
+  <div id="grid"></div>
+  <div id="toolbar">
+    <button id="playBtn">▶︎ Play Animation</button>
+    <div id="legend" style="display:flex;flex-wrap:wrap;justify-content:center;"></div>
+  </div>
+<script>
+// -------------- CONFIG --------------
+const BASINS=[
+  'Arabian Sea',
+  'Baltic Sea',
+  'Atlantic Ocean',
+  'Pacific Ocean',
+  'Indian Ocean',
+  'Mediterranean Sea'
+];
+// Color palette
+const color=d3.scaleOrdinal().domain(BASINS).range(d3.schemeTableau10);
+const margin={top:20,right:10,bottom:28,left:40};
+const W=260-margin.left-margin.right;
+const H=180-margin.top-margin.bottom;
+
+// -------------- DATE PARSER --------------
+function parseSeaDate(str){
+  const m=str.match(/D(\d{2})\/(\d{2})\/(\d{4})/);
+  return m?new Date(+m[3],+m[1]-1,+m[2]):null;
+}
+
+// -------------- BUILD LEGEND --------------
+const leg=d3.select('#legend');
+leg.selectAll('div').data(BASINS).enter().append('div').attr('class','legend-item')
+  .each(function(d){
+    const item=d3.select(this);
+    item.append('div').attr('class','legend-swatch').style('background',color(d));
+    item.append('span').text(d);
+  });
+
+// -------------- LOAD DATA --------------
+d3.csv("data/Change_in_Mean_Sea_Levels.csv",d=>({
+  basin:d.Measure.trim(),
+  date:parseSeaDate(d.Date),
+  value:+d.Value
+})).then(raw=>{
+  const data=raw.filter(d=>BASINS.includes(d.basin)&&d.date&&isFinite(d.value));
+  const series=d3.rollups(data,v=>v.sort((a,b)=>a.date-b.date),d=>d.basin)
+                .map(([key,values])=>({key,values}));
+  const xDomain=d3.extent(data,d=>d.date);
+  const xScale=d3.scaleTime().domain(xDomain).range([0,W]);
+
+  // Build grid
+  const grid=d3.select('#grid');
+  series.forEach(s=>{
+    const cell=grid.append('div').attr('class','cell').attr('id',`cell-${s.key.replace(/\s+/g,'_')}`);
+    cell.append('div').attr('class','title').text(s.key);
+    const svg=cell.append('svg');
+    const g=svg.append('g').attr('transform',`translate(${margin.left},${margin.top})`);
+    const yScale=d3.scaleLinear().domain(d3.extent(s.values,d=>d.value)).nice().range([H,0]);
+
+    g.append('g').attr('class','axis').attr('transform',`translate(0,${H})`).call(d3.axisBottom(xScale).ticks(4).tickSizeOuter(0).tickFormat(d3.timeFormat('%Y')));
+    g.append('g').attr('class','axis').call(d3.axisLeft(yScale).ticks(4));
+
+    const line=d3.line().x(d=>xScale(d.date)).y(d=>yScale(d.value));
+    const path=g.append('path').datum(s.values).attr('fill','none').attr('stroke',color(s.key)).attr('stroke-width',1.6).attr('d',line);
+
+    const len=path.node().getTotalLength();
+    path.attr('stroke-dasharray',len).attr('stroke-dashoffset',len);
+
+    s.path=path; s.len=len; s.cell=cell;
+  });
+
+  // -------------- ANIMATION SEQUENCE --------------
+  let playing=false;
+  d3.select('#playBtn').on('click',()=>{
+    if(playing) return;
+    playing=true;
+    d3.select('#playBtn').text('⏳ Playing…');
+    runSeq(0);
+  });
+
+  function runSeq(i){
+    if(i>=series.length){
+      d3.select('#playBtn').text('▶︎ Play Again');
+      playing=false;
+      series.forEach(p=>p.cell.classed('active',false));
+      return;
+    }
+    const s=series[i];
+    series.forEach(p=>p.cell.classed('active',p===s));
+    s.path.attr('stroke-dashoffset',s.len)
+      .transition().duration(1800).ease(d3.easeLinear).attr('stroke-dashoffset',0)
+      .on('end',()=>setTimeout(()=>runSeq(i+1),400));
+  }
+
+}).catch(err=>{
+  d3.select('body').append('p').style('color','#c00').text('Data load error: '+err);
+  console.error(err);
+});
+</script>
+</body>
+</html>
